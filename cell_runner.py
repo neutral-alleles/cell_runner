@@ -4,7 +4,9 @@ import curses
 import logging
 import sys
 from enum import Enum
-from typing import List, Set, Tuple
+from typing import Any, List, Set, Tuple, TypeAlias
+
+CursesWindow: TypeAlias = Any  # Represents a curses window object
 
 CELL_WIDTH: int = 16
 CELL_REF_SEPARATOR = " :: "
@@ -22,7 +24,7 @@ class OperationMode(Enum):
         return self.name
 
 
-def setup_logger(name: str, log_file: str, level=logging.INFO) -> logging.Logger:
+def setup_logger(name: str, log_file: str, level: int = logging.INFO) -> logging.Logger:
     """Function to set up a logger with file and console handlers"""
 
     # Create a custom logger
@@ -193,7 +195,7 @@ def normal_read(runner: CellRunner, source: str):
         runner.grid = new_grid
 
 
-def main(stdscr) -> None:
+def main(stdscr: CursesWindow) -> None:
     # Initialize color pairs
     curses.start_color()
     curses.init_pair(1, curses.COLOR_GREEN, curses.COLOR_BLACK)  # Normal mode
@@ -343,8 +345,7 @@ def main(stdscr) -> None:
         stdscr.refresh()
 
         # Get user input
-        key: int = 0
-        key = stdscr.getch()
+        key: int = int(stdscr.getch())
 
         if runner.mode == OperationMode.NORMAL:
             if ord("0") <= key <= ord("9"):
