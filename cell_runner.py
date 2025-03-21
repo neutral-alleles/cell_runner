@@ -12,6 +12,11 @@ CELL_WIDTH: int = 16
 CELL_REF_SEPARATOR = " :: "
 
 
+class Keys(Enum):
+    ENTER = 10
+    ESC = 27
+
+
 class OperationMode(Enum):
     NORMAL = 1
     INSERT = 2
@@ -195,6 +200,310 @@ def normal_read(runner: CellRunner, source: str):
         runner.grid = new_grid
 
 
+def display_grid(stdscr: CursesWindow, runner: CellRunner) -> None:
+    stdscr.clear()
+    height, width = stdscr.getmaxyx()
+    height = int(height)
+    width = int(width)
+
+    horizontal_capacity: int = width // (CELL_WIDTH)
+
+    horizontal_start: int = runner.current_col - horizontal_capacity // 2
+    horizontal_end: int = runner.current_col + horizontal_capacity // 2
+
+    if horizontal_start < 0:
+        horizontal_start: int = 0
+        horizontal_end: int = horizontal_capacity
+
+    vertical_capacity = height // 2
+
+    vertical_start: int = runner.current_row - vertical_capacity // 2
+    vertical_end: int = runner.current_row + vertical_capacity // 2
+
+    if vertical_start < 0:
+        vertical_start: int = 0
+        vertical_end: int = vertical_capacity
+
+    # Update cell values before display
+    runner.update_cell_values()
+
+    # Draw horizontal ruler (column letters)
+    ruler_y = 0
+    for col in range(runner.columns):
+        if horizontal_start > col:
+            continue
+        elif col > horizontal_end:
+            break
+
+        col_letter = runner.get_column_letter(col)
+        x = (col - horizontal_start) * CELL_WIDTH + 2
+        if x < width - 1:
+            if runner.current_col == col:
+                stdscr.addstr(ruler_y, x, col_letter, curses.color_pair(4))
+            else:
+                stdscr.addstr(ruler_y, x, col_letter, curses.color_pair(1))
+
+    row_num_len = len(str(vertical_end))
+    border = row_num_len + 1
+
+    # Draw vertical ruler (row numbers) and cells
+    for i, row in enumerate(runner.grid):
+        row_num = str(i + 1)
+        if i < vertical_start:
+            continue
+        elif i > vertical_end:
+            break
+
+        y = (
+            i - vertical_start
+        ) * 2 + 1  # Each cell takes 3 lines, starting after the ruler
+        if y >= height - 1:
+            break
+
+        # Draw row number
+        if runner.current_row == i:
+            stdscr.addstr(y, 0, row_num.rjust(border), curses.color_pair(4))
+        else:
+            stdscr.addstr(y, 0, row_num.rjust(border), curses.color_pair(1))
+
+        # Draw cell border
+        stdscr.addstr(y, border, "│")
+        stdscr.addstr(y, width - 1, "│")
+        stdscr.addstr(y + 1, 0, "─" * (width - 1))
+
+        # Draw cells in the row
+        for j, cell in enumerate(row):
+            if j < horizontal_start:
+                continue
+            elif j > horizontal_end:
+                break
+
+            x = (j - horizontal_start) * CELL_WIDTH + 1 + border
+
+            if x >= width - 2:
+                break
+
+            content = cell.get_display_value()
+            if i == runner.current_row and j == runner.current_col:
+                if not content:
+                    content = CELL_WIDTH * "_"
+                stdscr.addstr(y, x, content[:7], curses.color_pair(4))
+            else:
+                stdscr.addstr(y, x, content[:7])
+
+    mode_str = f"Mode: {runner.mode}"
+    if runner.command_buffer or runner.command_multiplier:
+        mode_str += f" | Command: {runner.command_multiplier}{runner.command_buffer}"
+
+    if runner.mode == OperationMode.INSERT:
+        cell_ref = runner.get_cell_reference(runner.current_row, runner.current_col)
+        input_str = f"{runner.current_input}"
+        if runner.input_cursor_pos <= len(input_str):
+            input_str = (
+                cell_ref
+                + CELL_REF_SEPARATOR
+                + input_str[: runner.input_cursor_pos]
+                + "█"
+                + input_str[runner.input_cursor_pos :]
+            )
+        final_input_str = f"{mode_str} {input_str}"
+        stdscr.addstr(height - 1, 0, final_input_str, curses.color_pair(2))
+    elif runner.mode == OperationMode.COMMAND:
+        cell_ref = runner.get_cell_reference(runner.current_row, runner.current_col)
+        input_str = f"{runner.current_input}"
+        if runner.input_cursor_pos <= len(input_str):
+            input_str = (
+                ":"
+                + input_str[: runner.input_cursor_pos]
+                + "█"
+                + input_str[runner.input_cursor_pos :]
+            )
+        final_input_str = f"{mode_str} {input_str}"
+        stdscr.addstr(height - 1, 0, final_input_str, curses.color_pair(2))
+    else:
+        cell_ref = runner.get_cell_reference(runner.current_row, runner.current_col)
+        cell_content = runner.get_current_cell().content
+        normal_str = f"{mode_str} {cell_ref} {cell_content}"
+        stdscr.addstr(height - 1, 0, normal_str, curses.color_pair(1))
+
+    stdscr.refresh()
+
+
+def handle_input(runner: CellRunner, key: int) -> bool:
+    if runner.mode == OperationMode.NORMAL:
+        return handle_normal_mode(runner, key)
+    elif runner.mode == OperationMode.INSERT:
+        return handle_insert_mode(runner, key)
+    elif runner.mode == OperationMode.COMMAND:
+        return handle_command_mode(runner, key)
+    return True
+
+
+def handle_normal_mode(runner: CellRunner, key: int) -> bool:
+    if ord("0") <= key <= ord("9"):
+        runner.command_multiplier = runner.command_multiplier * 10 + (key - ord("0"))
+    elif key == ord("j"):
+        mult = max(1, runner.command_multiplier)
+        runner.current_row = min(len(runner.grid) - 1, runner.current_row + mult)
+        runner.command_multiplier = 0
+    elif key == ord("k"):
+        mult = max(1, runner.command_multiplier)
+        runner.current_row = max(0, runner.current_row - mult)
+        runner.command_multiplier = 0
+    elif key == ord("h"):
+        mult = max(1, runner.command_multiplier)
+        runner.current_col = max(0, runner.current_col - mult)
+        runner.command_multiplier = 0
+    elif key == ord("l"):
+        mult = max(1, runner.command_multiplier)
+        runner.current_col = min(
+            len(runner.grid[0]) - 1,
+            runner.current_col + mult,
+        )
+        runner.command_multiplier = 0
+    elif key == ord("i"):
+        runner.mode = OperationMode.INSERT
+        runner.current_input = runner.get_current_cell().content
+        runner.input_cursor_pos = len(runner.current_input)
+    elif key == ord("a"):
+        runner.add_cell_right()
+        runner.mode = OperationMode.INSERT
+        runner.current_input = ""
+        runner.input_cursor_pos = 0
+    elif key == ord("A"):
+        last_col = runner.find_last_non_empty_in_row(runner.current_row)
+        if last_col >= 0:
+            runner.current_col = last_col + 1
+            runner.ensure_grid_size(runner.current_row, runner.current_col)
+        runner.mode = OperationMode.INSERT
+        runner.current_input = ""
+        runner.input_cursor_pos = 0
+    elif key == ord("o"):
+        runner.add_cell_below()
+        runner.mode = OperationMode.INSERT
+        runner.current_input = ""
+        runner.input_cursor_pos = 0
+    elif key == ord("O"):
+        runner.add_cell_above()
+        runner.mode = OperationMode.INSERT
+        runner.current_input = ""
+        runner.input_cursor_pos = 0
+    elif key == ord("x"):
+        runner.clear_cell()
+    elif key == ord("d"):
+        if runner.command_buffer == "d":
+            runner.delete_cell()
+            runner.command_buffer = ""
+        else:
+            runner.command_buffer = "d"
+    elif key == ord(":"):
+        runner.mode = OperationMode.COMMAND
+    elif key == Keys.ESC.value:
+        runner.command_buffer = ""
+        runner.command_multiplier = 0
+    return True
+
+
+def handle_command_mode(runner: CellRunner, key: int) -> bool:
+    if key == Keys.ESC.value:
+        runner.mode = OperationMode.NORMAL
+        runner.current_input = ""
+        runner.input_cursor_pos = 0
+    elif key == curses.KEY_BACKSPACE or key == 127:
+        if runner.input_cursor_pos > 0:
+            runner.current_input = (
+                runner.current_input[: runner.input_cursor_pos - 1]
+                + runner.current_input[runner.input_cursor_pos :]
+            )
+            runner.input_cursor_pos -= 1
+    elif key == curses.KEY_LEFT:
+        runner.input_cursor_pos = max(0, runner.input_cursor_pos - 1)
+    elif key == curses.KEY_RIGHT:
+        runner.input_cursor_pos = min(
+            len(runner.current_input), runner.input_cursor_pos + 1
+        )
+    elif key == Keys.ENTER.value:
+        current_command_input = runner.current_input
+
+        msg = f"command to run {current_command_input}"
+        CURRENT_LOGGER.info(msg)
+
+        split_command_input = current_command_input.split()
+
+        first_command = split_command_input[0]
+
+        if first_command == "w":
+            destination = split_command_input[1]
+            if destination:
+                normal_write(runner, destination)
+            else:
+                normal_write(runner, "tmp.txt")
+
+        elif first_command == "r":
+            source = split_command_input[1]
+            if source:
+                normal_read(runner, source)
+            else:
+                normal_read(runner, "tmp.txt")
+
+        elif first_command == "clear":
+            normal_free(runner)
+
+        elif first_command == "q":
+            return False
+
+        elif first_command.isdigit():
+            new_row = int(first_command)
+            runner.move_to_row(new_row)
+
+        runner.mode = OperationMode.NORMAL
+        runner.current_input = ""
+        runner.input_cursor_pos = 0
+    elif 32 <= key <= 126:  # Printable characters
+        runner.current_input = (
+            runner.current_input[: runner.input_cursor_pos]
+            + chr(key)
+            + runner.current_input[runner.input_cursor_pos :]
+        )
+        runner.input_cursor_pos += 1
+
+    return True
+
+
+def handle_insert_mode(runner: CellRunner, key: int) -> bool:
+    if key == Keys.ESC.value:
+        runner.mode = OperationMode.NORMAL
+        runner.current_input = ""
+        runner.input_cursor_pos = 0
+    elif key == curses.KEY_BACKSPACE or key == 127:
+        if runner.input_cursor_pos > 0:
+            runner.current_input = (
+                runner.current_input[: runner.input_cursor_pos - 1]
+                + runner.current_input[runner.input_cursor_pos :]
+            )
+            runner.input_cursor_pos -= 1
+    elif key == curses.KEY_LEFT:
+        runner.input_cursor_pos = max(0, runner.input_cursor_pos - 1)
+    elif key == curses.KEY_RIGHT:
+        runner.input_cursor_pos = min(
+            len(runner.current_input), runner.input_cursor_pos + 1
+        )
+    elif key == Keys.ENTER.value:  # Enter
+        runner.get_current_cell().set_content(runner.current_input)
+        runner.mode = OperationMode.NORMAL
+        runner.current_input = ""
+        runner.input_cursor_pos = 0
+    elif 32 <= key <= 126:  # Printable characters
+        runner.current_input = (
+            runner.current_input[: runner.input_cursor_pos]
+            + chr(key)
+            + runner.current_input[runner.input_cursor_pos :]
+        )
+        runner.input_cursor_pos += 1
+
+    return True
+
+
 def main(stdscr: CursesWindow) -> None:
     # Initialize color pairs
     curses.start_color()
@@ -208,305 +517,11 @@ def main(stdscr: CursesWindow) -> None:
 
     # Initialize the cell runner
     runner = CellRunner()
-
-    # Main loop
     while True:
-        stdscr.clear()
-        height, width = stdscr.getmaxyx()
-        height = int(height)
-        width = int(width)
-
-        horizontal_capacity: int = width // (CELL_WIDTH)
-
-        horizontal_start: int = runner.current_col - horizontal_capacity // 2
-        horizontal_end: int = runner.current_col + horizontal_capacity // 2
-
-        if horizontal_start < 0:
-            horizontal_start: int = 0
-            horizontal_end: int = horizontal_capacity
-
-        vertical_capacity = height // 2
-
-        vertical_start: int = runner.current_row - vertical_capacity // 2
-        vertical_end: int = runner.current_row + vertical_capacity // 2
-
-        if vertical_start < 0:
-            vertical_start: int = 0
-            vertical_end: int = vertical_capacity
-
-        # Update cell values before display
-        runner.update_cell_values()
-
-        # Draw horizontal ruler (column letters)
-        ruler_y = 0
-        for col in range(runner.columns):
-            if horizontal_start > col:
-                continue
-            elif col > horizontal_end:
-                break
-
-            col_letter = runner.get_column_letter(col)
-            x = (col - horizontal_start) * CELL_WIDTH + 2
-            if x < width - 1:
-                if runner.current_col == col:
-                    stdscr.addstr(ruler_y, x, col_letter, curses.color_pair(4))
-                else:
-                    stdscr.addstr(ruler_y, x, col_letter, curses.color_pair(1))
-
-        row_num_len = len(str(vertical_end))
-        border = row_num_len + 1
-
-        # Draw vertical ruler (row numbers) and cells
-        for i, row in enumerate(runner.grid):
-            row_num = str(i + 1)
-            if i < vertical_start:
-                continue
-            elif i > vertical_end:
-                break
-
-            y = (
-                i - vertical_start
-            ) * 2 + 1  # Each cell takes 3 lines, starting after the ruler
-            if y >= height - 1:
-                break
-
-            # Draw row number
-            if runner.current_row == i:
-                stdscr.addstr(y, 0, row_num.rjust(border), curses.color_pair(4))
-            else:
-                stdscr.addstr(y, 0, row_num.rjust(border), curses.color_pair(1))
-
-            # Draw cell border
-            stdscr.addstr(y, border, "│")
-            stdscr.addstr(y, width - 1, "│")
-            stdscr.addstr(y + 1, 0, "─" * (width - 1))
-
-            # Draw cells in the row
-            for j, cell in enumerate(row):
-                if j < horizontal_start:
-                    continue
-                elif j > horizontal_end:
-                    break
-
-                x = (j - horizontal_start) * CELL_WIDTH + 1 + border
-
-                if x >= width - 2:
-                    break
-
-                content = cell.get_display_value()
-                if i == runner.current_row and j == runner.current_col:
-                    if not content:
-                        content = CELL_WIDTH * "_"
-                    stdscr.addstr(y, x, content[:7], curses.color_pair(4))
-                else:
-                    stdscr.addstr(y, x, content[:7])
-
-        # Display mode and command buffer
-        cell_ref = runner.get_cell_reference(runner.current_row, runner.current_col)
-        mode_str = f"Mode: {runner.mode}"
-        if runner.command_buffer or runner.command_multiplier:
-            mode_str += (
-                f" | Command: {runner.command_multiplier}{runner.command_buffer}"
-            )
-
-        # Display input line in insert mode
-        if runner.mode == OperationMode.INSERT:
-            cell_ref = runner.get_cell_reference(runner.current_row, runner.current_col)
-            input_str = f"{runner.current_input}"
-            if runner.input_cursor_pos <= len(input_str):
-                input_str = (
-                    cell_ref
-                    + CELL_REF_SEPARATOR
-                    + input_str[: runner.input_cursor_pos]
-                    + "█"
-                    + input_str[runner.input_cursor_pos :]
-                )
-            final_input_str = f"{mode_str} {input_str}"
-            stdscr.addstr(height - 1, 0, final_input_str, curses.color_pair(2))
-        elif runner.mode == OperationMode.COMMAND:
-            cell_ref = runner.get_cell_reference(runner.current_row, runner.current_col)
-            input_str = f"{runner.current_input}"
-            if runner.input_cursor_pos <= len(input_str):
-                input_str = (
-                    ":"
-                    + input_str[: runner.input_cursor_pos]
-                    + "█"
-                    + input_str[runner.input_cursor_pos :]
-                )
-            final_input_str = f"{mode_str} {input_str}"
-            stdscr.addstr(height - 1, 0, final_input_str, curses.color_pair(2))
-        else:
-            cell_ref = runner.get_cell_reference(runner.current_row, runner.current_col)
-            cell_content = runner.get_current_cell().content
-            normal_str = f"{mode_str} {cell_ref} {cell_content}"
-            stdscr.addstr(height - 1, 0, normal_str, curses.color_pair(1))
-
-        # Refresh the screen
-        stdscr.refresh()
-
-        # Get user input
-        key: int = int(stdscr.getch())
-
-        if runner.mode == OperationMode.NORMAL:
-            if ord("0") <= key <= ord("9"):
-                runner.command_multiplier = runner.command_multiplier * 10 + (
-                    key - ord("0")
-                )
-            elif key == ord("j"):
-                mult = max(1, runner.command_multiplier)
-                runner.current_row = min(
-                    len(runner.grid) - 1, runner.current_row + mult
-                )
-                runner.command_multiplier = 0
-            elif key == ord("k"):
-                mult = max(1, runner.command_multiplier)
-                runner.current_row = max(0, runner.current_row - mult)
-                runner.command_multiplier = 0
-            elif key == ord("h"):
-                mult = max(1, runner.command_multiplier)
-                runner.current_col = max(0, runner.current_col - mult)
-                runner.command_multiplier = 0
-            elif key == ord("l"):
-                mult = max(1, runner.command_multiplier)
-                runner.current_col = min(
-                    len(runner.grid[0]) - 1,
-                    runner.current_col + mult,
-                )
-                runner.command_multiplier = 0
-            elif key == ord("i"):
-                runner.mode = OperationMode.INSERT
-                runner.current_input = runner.get_current_cell().content
-                runner.input_cursor_pos = len(runner.current_input)
-            elif key == ord("a"):
-                runner.add_cell_right()
-                runner.mode = OperationMode.INSERT
-                runner.current_input = ""
-                runner.input_cursor_pos = 0
-            elif key == ord("A"):
-                last_col = runner.find_last_non_empty_in_row(runner.current_row)
-                if last_col >= 0:
-                    runner.current_col = last_col + 1
-                    runner.ensure_grid_size(runner.current_row, runner.current_col)
-                runner.mode = OperationMode.INSERT
-                runner.current_input = ""
-                runner.input_cursor_pos = 0
-            elif key == ord("o"):
-                runner.add_cell_below()
-                runner.mode = OperationMode.INSERT
-                runner.current_input = ""
-                runner.input_cursor_pos = 0
-            elif key == ord("O"):
-                runner.add_cell_above()
-                runner.mode = OperationMode.INSERT
-                runner.current_input = ""
-                runner.input_cursor_pos = 0
-            elif key == ord("x"):
-                runner.clear_cell()
-            elif key == ord("d"):
-                if runner.command_buffer == "d":
-                    runner.delete_cell()
-                    runner.command_buffer = ""
-                else:
-                    runner.command_buffer = "d"
-            elif key == ord(":"):
-                runner.mode = OperationMode.COMMAND
-            elif key == 27:  # ESC
-                runner.command_buffer = ""
-                runner.command_multiplier = 0
-
-        elif runner.mode == OperationMode.COMMAND:
-            if key == 27:
-                runner.mode = OperationMode.NORMAL
-                runner.current_input = ""
-                runner.input_cursor_pos = 0
-            elif key == curses.KEY_BACKSPACE or key == 127:
-                if runner.input_cursor_pos > 0:
-                    runner.current_input = (
-                        runner.current_input[: runner.input_cursor_pos - 1]
-                        + runner.current_input[runner.input_cursor_pos :]
-                    )
-                    runner.input_cursor_pos -= 1
-            elif key == curses.KEY_LEFT:
-                runner.input_cursor_pos = max(0, runner.input_cursor_pos - 1)
-            elif key == curses.KEY_RIGHT:
-                runner.input_cursor_pos = min(
-                    len(runner.current_input), runner.input_cursor_pos + 1
-                )
-            elif key == 10:  # Enter
-                current_command_input = runner.current_input
-
-                msg = f"command to run {current_command_input}"
-                CURRENT_LOGGER.info(msg)
-
-                split_command_input = current_command_input.split()
-
-                first_command = split_command_input[0]
-
-                if first_command == "w":
-                    destination = split_command_input[1]
-                    if destination:
-                        normal_write(runner, destination)
-                    else:
-                        normal_write(runner, "tmp.txt")
-
-                elif first_command == "r":
-                    source = split_command_input[1]
-                    if source:
-                        normal_read(runner, source)
-                    else:
-                        normal_read(runner, "tmp.txt")
-
-                elif first_command == "clear":
-                    normal_free(runner)
-
-                elif first_command == "q":
-                    break
-
-                elif first_command.isdigit():
-                    new_row = int(first_command)
-                    runner.move_to_row(new_row)
-
-                runner.mode = OperationMode.NORMAL
-                runner.current_input = ""
-                runner.input_cursor_pos = 0
-            elif 32 <= key <= 126:  # Printable characters
-                runner.current_input = (
-                    runner.current_input[: runner.input_cursor_pos]
-                    + chr(key)
-                    + runner.current_input[runner.input_cursor_pos :]
-                )
-                runner.input_cursor_pos += 1
-
-        elif runner.mode == OperationMode.INSERT:
-            if key == 27:  # ESC
-                runner.mode = OperationMode.NORMAL
-                runner.current_input = ""
-                runner.input_cursor_pos = 0
-            elif key == curses.KEY_BACKSPACE or key == 127:
-                if runner.input_cursor_pos > 0:
-                    runner.current_input = (
-                        runner.current_input[: runner.input_cursor_pos - 1]
-                        + runner.current_input[runner.input_cursor_pos :]
-                    )
-                    runner.input_cursor_pos -= 1
-            elif key == curses.KEY_LEFT:
-                runner.input_cursor_pos = max(0, runner.input_cursor_pos - 1)
-            elif key == curses.KEY_RIGHT:
-                runner.input_cursor_pos = min(
-                    len(runner.current_input), runner.input_cursor_pos + 1
-                )
-            elif key == 10:  # Enter
-                runner.get_current_cell().set_content(runner.current_input)
-                runner.mode = OperationMode.NORMAL
-                runner.current_input = ""
-                runner.input_cursor_pos = 0
-            elif 32 <= key <= 126:  # Printable characters
-                runner.current_input = (
-                    runner.current_input[: runner.input_cursor_pos]
-                    + chr(key)
-                    + runner.current_input[runner.input_cursor_pos :]
-                )
-                runner.input_cursor_pos += 1
+        display_grid(stdscr, runner)
+        key = stdscr.getch()
+        if not handle_input(runner, key):
+            break
 
 
 if __name__ == "__main__":
@@ -514,4 +529,3 @@ if __name__ == "__main__":
         curses.wrapper(main)
     except KeyboardInterrupt:
         sys.exit(0)
-
