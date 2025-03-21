@@ -168,6 +168,10 @@ class CellRunner:
         self.ensure_grid_size(self.current_row, new_cell)
         self.current_cell = new_cell
 
+    def delete_current_row(self):
+        del self.grid[self.current_row]
+        self.ensure_grid_size(self.current_row, self.current_col)
+
 
 def normal_write(runner: CellRunner, destination: str):
     # TODO add ranges and different formats
@@ -239,12 +243,13 @@ def display_grid(stdscr: CursesWindow, runner: CellRunner) -> None:
         x = (col - horizontal_start) * CELL_WIDTH + 2
         if x < width - 1:
             if runner.current_col == col:
-                stdscr.addstr(ruler_y, x, col_letter, curses.color_pair(4))
+                color_pair = 4
             else:
-                stdscr.addstr(ruler_y, x, col_letter, curses.color_pair(1))
+                color_pair = 1
 
-    row_num_len = len(str(vertical_end))
-    border = row_num_len + 1
+            stdscr.addstr(ruler_y, x, col_letter, curses.color_pair(color_pair))
+
+    border = 1 + len(str(vertical_end))
 
     # Draw vertical ruler (row numbers) and cells
     for i, row in enumerate(runner.grid):
@@ -392,8 +397,8 @@ def handle_normal_mode(runner: CellRunner, key: int) -> bool:
         runner.clear_cell()
     elif key == ord("d"):
         if runner.command_buffer == "d":
-            runner.delete_cell()
             runner.command_buffer = ""
+            runner.delete_current_row()
         else:
             runner.command_buffer = "d"
     elif key == ord(":"):
